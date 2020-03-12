@@ -288,7 +288,473 @@ Construct and run the below command using the above subnet id values.
 export PUBLIC_SUBNET_LIST="subnet-764d7d11,subnet-a2c2fd8c,subnet-cb26e686,subnet-7acbf626,subnet-93d490ad,subnet-313ad03f"
 ```
 
+Find file templates/asg.json for the Auto scaling group configuration. 
 
+```
+{
+  "AutoScalingGroupName": "%ASG_NAME%",
+  "MixedInstancesPolicy": {
+    "LaunchTemplate": {
+      "LaunchTemplateSpecification": {
+        "LaunchTemplateName": "%LAUNCH_TEMPLATE_NAME%",
+        "Version": "%LAUNCH_TEMPLATE_VERSION%"
+      },
+      "Overrides": [
+        {
+          "InstanceType": "%INSTANCE_TYPE_1%"
+        },
+        {
+          "InstanceType": "%INSTANCE_TYPE_2%"
+        },
+        {
+          "InstanceType": "%INSTANCE_TYPE_3%"
+        },
+        {
+          "InstanceType": "%INSTANCE_TYPE_4%"
+        },
+        {
+          "InstanceType": "%INSTANCE_TYPE_5%"
+        },
+        {
+          "InstanceType": "%INSTANCE_TYPE_6%"
+        }
+      ]
+    },
+    "InstancesDistribution": {
+      "OnDemandAllocationStrategy": "prioritized",
+      "OnDemandBaseCapacity": %OD_BASE%,
+      "OnDemandPercentageAboveBaseCapacity": %OD_PERCENTAGE%,
+      "SpotAllocationStrategy": "lowest-price",
+      "SpotInstancePools": 4
+    }
+  },
+  "MinSize": %MIN_SIZE%,
+  "MaxSize": %MAX_SIZE%,
+  "DesiredCapacity": %DESIREDS_SIZE%,
+  "DefaultCooldown": 300,
+  "HealthCheckGracePeriod": 300, 
+  "HealthCheckType": "EC2",
+  "VPCZoneIdentifier": "%PUBLIC_SUBNET_LIST%",
+      "TerminationPolicies": [ 
+        "DEFAULT" 
+  ],
+  "NewInstancesProtectedFromScaleIn": true, 
+  "ServiceLinkedRoleARN": "%SERVICE_ROLE_ARN%"
+}
+
+```
+Copy this Template file to the current directory
+
+```
+cp -Rfp templates/asg.json .
+```
+
+Run the following commands to substitute the template with actual values from the global variables
+
+```
+sed -i.bak -e "s#%ASG_NAME%#$ASG_NAME#g"  asg.json
+sed -i.bak -e "s#%LAUNCH_TEMPLATE_NAME%#$LAUNCH_TEMPLATE_NAME#g"  asg.json
+sed -i.bak -e "s#%LAUNCH_TEMPLATE_VERSION%#$LAUNCH_TEMPLATE_VERSION#g"  asg.json
+sed -i.bak -e "s#%INSTANCE_TYPE_1%#$INSTANCE_TYPE_1#g"  asg.json
+sed -i.bak -e "s#%INSTANCE_TYPE_2%#$INSTANCE_TYPE_2#g"  asg.json
+sed -i.bak -e "s#%INSTANCE_TYPE_3%#$INSTANCE_TYPE_3#g"  asg.json
+sed -i.bak -e "s#%INSTANCE_TYPE_4%#$INSTANCE_TYPE_4#g"  asg.json
+sed -i.bak -e "s#%INSTANCE_TYPE_5%#$INSTANCE_TYPE_5#g"  asg.json
+sed -i.bak -e "s#%INSTANCE_TYPE_6%#$INSTANCE_TYPE_6#g"  asg.json
+sed -i.bak -e "s#%OD_BASE%#$OD_BASE#g"  asg.json
+sed -i.bak -e "s#%OD_PERCENTAGE%#$OD_PERCENTAGE#g"  asg.json
+sed -i.bak -e "s#%MIN_SIZE%#$MIN_SIZE#g"  asg.json
+sed -i.bak -e "s#%MAX_SIZE%#$MAX_SIZE#g"  asg.json
+sed -i.bak -e "s#%DESIREDS_SIZE%#$DESIREDS_SIZE#g"  asg.json
+sed -i.bak -e "s#%OD_BASE%#$OD_BASE#g"  asg.json
+sed -i.bak -e "s#%PUBLIC_SUBNET_LIST%#$PUBLIC_SUBNET_LIST#g"  asg.json
+sed -i.bak -e "s#%SERVICE_ROLE_ARN%#$SERVICE_ROLE_ARN#g"  asg.json
+
+```
+
+•	Create the auto scaling group for the On Demand Instances
+
+```
+aws autoscaling create-auto-scaling-group --cli-input-json file://asg.json
+ASG_ARN=$(aws autoscaling describe-auto-scaling-groups --auto-scaling-group-name $ASG_NAME_OD | jq -r '.AutoScalingGroups[0].AutoScalingGroupARN')
+
+echo "$ASG_NAME_OD ARN=$ASG_ARN"
+
+```
+
+The output of the above command looks like below
+ecs-spot-workshop-asg-od ARN=arn:aws:autoscaling:us-east-1:000474600478:autoScalingGroup:1e9de503-068e-4d78-8272-82536fc92d14:autoScalingGroupName/ecs-spot-workshop-asg-od 
+
+
+•	Create a template file templates/ecs-capacityprovider.json for the Capacity Provider Configuration. 
+
+```
+{
+    "name": "%CAPACITY_PROVIDER_NAME%", 
+    "autoScalingGroupProvider": {
+    "autoScalingGroupArn": "%ASG_ARN%",
+            "managedScaling": {
+                "status": "ENABLED",
+                "targetCapacity": %TARGET_CAPACITY%,
+                "minimumScalingStepSize": 1,
+                "maximumScalingStepSize": %MAX_SIZE%
+            },
+            "managedTerminationProtection": "ENABLED"
+    }
+}
+
+```
+
+Copy the template file to the current folder
+
+```
+cp -Rfp  templates/ecs-capacityprovider.json .
+```
+Replace the place holder values in the template file
+
+```
+export TARGET_CAPACITY=100
+export CAPACITY_PROVIDER_NAME=$OD_CAPACITY_PROVIDER_NAME
+sed -i.bak -e "s#%CAPACITY_PROVIDER_NAME%#$CAPACITY_PROVIDER_NAME#g"  ecs-capacityprovider.json
+sed -i.bak -e "s#%ASG_ARN%#$ASG_ARN#g"  ecs-capacityprovider.json
+sed -i.bak -e "s#%MAX_SIZE%#$MAX_SIZE#g"  ecs-capacityprovider.json
+sed -i.bak -e "s#%TARGET_CAPACITY%#$TARGET_CAPACITY#g"  ecs-capacityprovider.json
+```
+
+Create the On-Demand Capacity Provider with Auto scaling group
+
+```
+CAPACITY_PROVIDER_ARN=$(aws ecs create-capacity-provider --cli-input-json file://ecs-capacityprovider.json | jq -r '.capacityProvider.capacityProviderArn')
+
+echo "$OD_CAPACITY_PROVIDER_NAME ARN=$CAPACITY_PROVIDER_ARN"
+
+```
+
+The output of the above command looks like
+
+od-capacity_provider ARN=arn:aws:ecs:us-east-1:000474600478:capacity-provider/od-capacity_provider 
+
+
+Create Capacity Provider for EC2 Spot using Auto Scaling Group 
+
+In this section, let us first create an Auto Scaling Group for EC2 Spot Instances using the Launch Template created in section earlier
+This procedure is exactly same Section 6 except the change in below configuration for EC2 Spot instances
+
+
+
+### Step7 : Create Capacity Provider for EC2 Spot using Auto Scaling Group 
+
+•	Copy the Template file and replace the values for EC2 spot configuration
+
+```
+cp -Rfp templates/asg.json .
+```
+
+•	Replace the values for Auto Scaling Group configuration  for EC2 spot
+
+```
+export ASG_NAME=$ASG_NAME_SPOT
+export OD_PERCENTAGE=0
+
+sed -i.bak -e "s#%ASG_NAME%#$ASG_NAME#g"  asg.json
+sed -i.bak -e "s#%LAUNCH_TEMPLATE_NAME%#$LAUNCH_TEMPLATE_NAME#g"  asg.json
+sed -i.bak -e "s#%LAUNCH_TEMPLATE_VERSION%#$LAUNCH_TEMPLATE_VERSION#g"  asg.json
+sed -i.bak -e "s#%INSTANCE_TYPE_1%#$INSTANCE_TYPE_1#g"  asg.json
+sed -i.bak -e "s#%INSTANCE_TYPE_2%#$INSTANCE_TYPE_2#g"  asg.json
+sed -i.bak -e "s#%INSTANCE_TYPE_3%#$INSTANCE_TYPE_3#g"  asg.json
+sed -i.bak -e "s#%INSTANCE_TYPE_4%#$INSTANCE_TYPE_4#g"  asg.json
+sed -i.bak -e "s#%INSTANCE_TYPE_5%#$INSTANCE_TYPE_5#g"  asg.json
+sed -i.bak -e "s#%INSTANCE_TYPE_6%#$INSTANCE_TYPE_6#g"  asg.json
+sed -i.bak -e "s#%OD_BASE%#$OD_BASE#g"  asg.json
+sed -i.bak -e "s#%OD_PERCENTAGE%#$OD_PERCENTAGE#g"  asg.json
+sed -i.bak -e "s#%MIN_SIZE%#$MIN_SIZE#g"  asg.json
+sed -i.bak -e "s#%MAX_SIZE%#$MAX_SIZE#g"  asg.json
+sed -i.bak -e "s#%DESIREDS_SIZE%#$DESIREDS_SIZE#g"  asg.json
+sed -i.bak -e "s#%OD_BASE%#$OD_BASE#g"  asg.json
+sed -i.bak -e "s#%PUBLIC_SUBNET_LIST%#$PUBLIC_SUBNET_LIST#g"  asg.json
+sed -i.bak -e "s#%SERVICE_ROLE_ARN%#$SERVICE_ROLE_ARN#g"  asg.json
+
+```
+
+•	Create the Auto scaling group for EC2 spot
+
+```
+aws autoscaling create-auto-scaling-group --cli-input-json file://asg.json
+ASG_ARN=$(aws autoscaling describe-auto-scaling-groups --auto-scaling-group-name $ASG_NAME_SPOT | jq -r '.AutoScalingGroups[0].AutoScalingGroupARN')
+
+echo "$ASG_NAME_SPOT ARN=$ASG_ARN"
+
+```
+
+The output for the above command looks like this
+
+ecs-spot-workshop-asg-spot ARN=arn:aws:autoscaling:us-east-1:000474600478:autoScalingGroup:dd7a67e0-4df0-4cda-98d7-7e13c36dec5b:autoScalingGroupName/ecs-spot-workshop-asg-spot
+
+
+•	Copy the template file for Capacity Provider to the current directory.
+
+```
+cp -Rfp templates/ecs-capacityprovider.json .
+```
+
+•	Run the following commands to substitute the template with actual values from the global variables
+
+```
+export TARGET_CAPACITY=100
+export CAPACITY_PROVIDER_NAME=$SPOT_CAPACITY_PROVIDER_NAME
+sed -i.bak -e "s#%CAPACITY_PROVIDER_NAME%#$CAPACITY_PROVIDER_NAME#g"  ecs-capacityprovider.json
+sed -i.bak -e "s#%ASG_ARN%#$ASG_ARN#g"  ecs-capacityprovider.json
+sed -i.bak -e "s#%MAX_SIZE%#$MAX_SIZE#g"  ecs-capacityprovider.json
+sed -i.bak -e "s#%TARGET_CAPACITY%#$TARGET_CAPACITY#g"  ecs-capacityprovider.json
+
+```
+
+•	Create the EC2 Spot Capacity Provider with Auto scaling group
+
+```
+CAPACITY_PROVIDER_ARN=$(aws ecs create-capacity-provider --cli-input-json file://ecs-capacityprovider.json | jq -r '.capacityProvider.capacityProviderArn')
+
+echo "$SPOT_CAPACITY_PROVIDER_NAME ARN=$CAPACITY_PROVIDER_ARN"
+
+```
+
+The output of the above command looks like
+
+spot-capacity_provider ARN=arn:aws:ecs:us-east-1:000474600478:capacity-provider/ec2spot-capacity_provider
+
+
+
+### Step8 :  Create ECS Cluster with Capacity Providers
+
+
+Now let’s create the ECS cluster with above 2 Capacity Providers
+
+```
+aws ecs create-cluster --cluster-name $ECS_FARGATE_CLUSTER_NAME \
+       --capacity-providers $OD_CAPACITY_PROVIDER_NAME $SPOT_CAPACITY_PROVIDER_NAME \
+       --default-capacity-provider-strategy capacityProvider=$OD_CAPACITY_PROVIDER_NAME,base=1,weight=1 \
+         capacityProvider=$SPOT_CAPACITY_PROVIDER_NAME,weight=0
+
+sleep 10
+
+```
+The sleep statement is to allow the ECS cluster status to change to ACTIVE
+
+Go to AWS > Services > ECS
+Select the ECS Cluster created in last Step
+
+Click on the Update Cluster on the top right corner to see default Capacity Provider Strategy. As shown base=1 is set for OD Capacity Provider. 
+That means if there is no capacity provider strategy specified during the deploying Tasks/Services, ECS by default chooses the OD Capacity Provider to launch them.
+
+Click on Cancel as we don’t want to change the default strategy for now.
+
+Now let’s add two more Capacity Providers i.e. FARGATE and FARGATE_SPOT
+
+```
+aws ecs put-cluster-capacity-providers   --cluster $ECS_FARGATE_CLUSTER_NAME \
+     --capacity-providers FARGATE FARGATE_SPOT $OD_CAPACITY_PROVIDER_NAME $SPOT_CAPACITY_PROVIDER_NAME  \
+     --default-capacity-provider-strategy capacityProvider=$OD_CAPACITY_PROVIDER_NAME,base=1,weight=1 \
+         capacityProvider=$SPOT_CAPACITY_PROVIDER_NAME,weight=0  \
+     --region $AWS_REGION
+
+
+```
+The ECS cluster should now contain 4 Capacity Providers 2 from Auto Scaling groups (1 for OD and 1 for Spot), 1 from FARGATE and 1 from FARGATE_SPOT
+
+
+### Step9 :  Create ECS Tasks 
+
+In this section, we will create two tasks definitions: one for EC2 and one for Fargate.  
+Fine webapp-fargate-task.json with below contents
+
+```
+•	Create a file webapp-fargate-task.json with below contents or directly download from the link
+{
+    "family": "webapp-fargate-task", 
+    "networkMode": "awsvpc", 
+    "containerDefinitions": [
+        {
+            "name": "fargate-app", 
+            "image": "httpd:2.4", 
+            "portMappings": [
+                {
+                    "containerPort": 80, 
+                    "hostPort": 80, 
+                    "protocol": "tcp"
+                }
+            ], 
+            "essential": true, 
+            "entryPoint": [
+                "sh",
+		"-c"
+            ], 
+            "command": [
+                "/bin/sh -c \"echo '<html> <head> <title>Amazon ECS Sample App</title> <style>body {margin-top: 40px; background-color: #333;} </style> </head><body> <div style=color:white;text-align:center> <h1>Amazon ECS Sample App</h1> <h2>Congratulations!</h2> <p>Your application is now running on a container in Amazon ECS.</p> </div></body></html>' >  /usr/local/apache2/htdocs/index.html && httpd-foreground\""
+            ]
+        }
+    ], 
+    "requiresCompatibilities": [
+        "FARGATE"
+    ], 
+    "cpu": "256", 
+    "memory": "512"
+}
+
+```
+
+•	Run the below command to create the task definition
+
+```
+aws ecs register-task-definition --cli-input-json file://webapp-fargate-task.json
+WEBAPP_FARGATE_TASK_DEF=$(cat webapp-fargate-task.json | jq -r '.family')
+
+```
+Make a note of the version number of the task. Ideally it should be 1 if you are registering the task for the first time.
+
+Find a file webapp-ec2-task.json with below contents 
+
+```
+{
+    "family": "webapp-ec2-task", 
+    "containerDefinitions": [
+        {
+            "name": "fargate-app", 
+            "image": "httpd:2.4", 
+            "portMappings": [
+                {
+                    "containerPort": 80, 
+                    "hostPort": 80, 
+                    "protocol": "tcp"
+                }
+            ], 
+            "essential": true, 
+            "entryPoint": [
+                "sh",
+		"-c"
+            ], 
+            "command": [
+                "/bin/sh -c \"echo '<html> <head> <title>Amazon ECS Sample App</title> <style>body {margin-top: 40px; background-color: #333;} </style> </head><body> <div style=color:white;text-align:center> <h1>Amazon ECS Sample App</h1> <h2>Congratulations!</h2> <p>Your application is now running on a container in Amazon ECS.</p> </div></body></html>' >  /usr/local/apache2/htdocs/index.html && httpd-foreground\""
+            ]
+        }
+    ], 
+    "requiresCompatibilities": [
+        "EC2"
+    ], 
+    "cpu": "256", 
+    "memory": "512"
+}
+
+```
+
+
+•	Run the below command to create the task definition
+
+```
+aws ecs register-task-definition --cli-input-json file://webapp-ec2-task.json
+WEBAPP_EC2_TASK_DEF=$(cat webapp-ec2-task.json | jq -r '.family')
+```
+
+### Step10 :  Create ECS Services 
+
+
+Now we will create couple of ECS services from the Task definition which would have their own Capacity Provider Strategy
+
+1. webapp-ec2-service-od 
+
+```
+export ECS_SERVICE_NAME=webapp-ec2-service-od
+export TASK_COUNT=2
+
+aws ecs create-service \
+     --capacity-provider-strategy capacityProvider=$OD_CAPACITY_PROVIDER_NAME,weight=1 \
+     --cluster $ECS_FARGATE_CLUSTER_NAME \
+     --service-name $ECS_SERVICE_NAME \
+     --task-definition $WEBAPP_EC2_TASK_DEF:4 \
+     --desired-count $TASK_COUNT \
+     --region $AWS_REGION 
+
+```
+
+This service deployment triggers Cloud watch alarms for Cluster Capacity. Based on the specified weightage for Capacity Providers, the OD Capacity Provider in this case (i.e. corresponding Auto scaling group) scales 2 instances to schedule 2 tasks for this service.
+
+2. webapp-ec2-service-spot
+
+```
+export ECS_SERVICE_NAME=webapp-ec2-service-spot
+export TASK_COUNT=2
+
+aws ecs create-service \
+     --capacity-provider-strategy capacityProvider=$SPOT_CAPACITY_PROVIDER_NAME,weight=1 \
+     --cluster $ECS_FARGATE_CLUSTER_NAME \
+     --service-name $ECS_SERVICE_NAME \
+     --task-definition $WEBAPP_EC2_TASK_DEF:4 \
+     --desired-count $TASK_COUNT \
+     --region $AWS_REGION 
+```
+
+This service deployment triggers Cloud watch alarms for Cluster Capacity. Based on the specified weightage for Capacity Providers, the Spot Capacity Provider in this case (i.e. corresponding Auto scaling group) scales 2 instances to schedule 2 tasks for this service.
+
+3. webapp-ec2-service-mix 
+
+```
+export ECS_SERVICE_NAME=webapp-ec2-service-mix
+export TASK_COUNT=6
+
+aws ecs create-service \
+     --capacity-provider-strategy capacityProvider=$OD_CAPACITY_PROVIDER_NAME,weight=1 \
+                                  capacityProvider=$SPOT_CAPACITY_PROVIDER_NAME,weight=3 \
+     --cluster $ECS_FARGATE_CLUSTER_NAME \
+     --service-name $ECS_SERVICE_NAME \
+     --task-definition $WEBAPP_EC2_TASK_DEF:4 \
+     --desired-count $TASK_COUNT \
+     --region $AWS_REGION
+
+```
+
+This service deployment triggers Cloud watch alarms for Cluster Capacity. Based on the specified weightage (i.e. OD=1, Spot=3) for Capacity Providers, Both OD and  Spot Capacity Provider in this case (i.e. corresponding Auto scaling groups) scales 4 (Spot) and 3(OD) instances to schedule 6 tasks for this service
+
+4. fargate-service-fargate 
+
+Change Subnet ID here "subnet-XXXXX" and Security Group "sg-4f3f0d1e"
+
+```
+export ECS_SERVICE_NAME=fargate-service-fargate
+export TASK_COUNT=2
+
+aws ecs create-service \
+     --capacity-provider-strategy capacityProvider=FARGATE,weight=1 \
+     --cluster $ECS_FARGATE_CLUSTER_NAME \
+     --service-name $ECS_SERVICE_NAME \
+     --task-definition $WEBAPP_FARGATE_TASK_DEF:4 \
+     --desired-count $TASK_COUNT \
+     --region $AWS_REGION \
+ 	 --network-configuration "awsvpcConfiguration={subnets=[subnet-764d7d11],securityGroups=[sg-4f3f0d1e],assignPublicIp="ENABLED"}"
+```
+ECS Fargate provisions computing resources to deploy 2 Fargate tasks.
+
+5. webapp-fargate-service-fargate-spot 
+
+Change Subnet ID here "subnet-XXXXX" and Security Group "sg-4f3f0d1e"
+
+```
+export ECS_SERVICE_NAME=webapp-fargate-service-fargate-spot
+export TASK_COUNT=2
+aws ecs create-service \
+     --capacity-provider-strategy capacityProvider=FARGATE_SPOT,weight=1 \
+     --cluster $ECS_FARGATE_CLUSTER_NAME \
+     --service-name $ECS_SERVICE_NAME \
+     --task-definition $WEBAPP_FARGATE_TASK_DEF:4 \
+     --desired-count $TASK_COUNT \
+     --region $AWS_REGION \
+ 	 --network-configuration "awsvpcConfiguration={subnets=[subnet-764d7d11],securityGroups=[sg-4f3f0d1e],assignPublicIp="ENABLED"}"
+
+
+```
+
+
+
+
+```
 
 In this workshop, you will deploy the following:
 
